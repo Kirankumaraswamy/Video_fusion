@@ -151,7 +151,7 @@ def test(args, model, criterion, device, test_dataloader):
 def parse_args():
 
     parser = argparse.ArgumentParser(description='Video Clip Order Prediction')
-    parser.add_argument('--data', type=str, default='/home/kiran/kiran/Thesis/code/kiran_code/datasets/UCF50_small1', metavar='DIR', help='path to dataset')
+    parser.add_argument('--data', type=str, default='datasets/UCF50', metavar='DIR', help='path to dataset')
     parser.add_argument('--mode', type=str, default='train', help='train/test')
     parser.add_argument('--model', type=str, default='r21d', help='c3d/r3d/r21d/c3d_small')
     parser.add_argument('--cl', type=int, default=8, help='clip length')
@@ -161,10 +161,10 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
     parser.add_argument('--momentum', type=float, default=9e-1, help='momentum')
     parser.add_argument('--wd', type=float, default=5e-4, help='weight decay')
-    parser.add_argument('--log', default="/home/kiran/kiran/Thesis/code/kiran_code/datasets/logs", type=str, help='log directory')
+    parser.add_argument('--log', default="", type=str, help='log directory')
     parser.add_argument('--ckpt', type=str, help='checkpoint path')
     parser.add_argument('--desp', type=str, help='additional description')
-    parser.add_argument('--epochs', type=int, default=4, help='number of total epochs to run')
+    parser.add_argument('--epochs', type=int, default=100, help='number of total epochs to run')
     parser.add_argument('--start-epoch', type=int, default=1, help='manual epoch number (useful on restarts)')
     parser.add_argument('--bs', type=int, default=2, help='mini-batch size')
     parser.add_argument('--workers', type=int, default=4, help='number of data loading workers')
@@ -182,6 +182,8 @@ if __name__ == '__main__':
     args = parse_args()
     print(vars(args))
     logging.info(vars(args))
+
+    args.data = os.path.join(os.path.dirname(__file__), args.data)
 
     torch.backends.cudnn.benchmark = True
     # Force the pytorch to create context on the specific device 
@@ -217,7 +219,6 @@ if __name__ == '__main__':
             transforms.RandomCrop(112),
             transforms.ToTensor()
         ])
-
 
 
         train_dataset = UCF50VCOP(traindir, args.cl, args.it, args.tl, True, train_transforms)
@@ -269,13 +270,12 @@ if __name__ == '__main__':
 
             log_dir = os.path.dirname(args.ckpt)
         else:
-            print("=> no checkpoint found at '{}'".format(args.resume))
+            print("=> no checkpoint found at '{}'".format(args.ckpt))
             if args.desp:
                 exp_name = '{}_cl{}_it{}_tl{}_{}_{}'.format(args.model, args.cl, args.it, args.tl, args.desp, time.strftime('%m%d%H%M'))
             else:
                 exp_name = '{}_cl{}_it{}_tl{}_{}'.format(args.model, args.cl, args.it, args.tl, time.strftime('%m%d%H%M'))
             log_dir = os.path.join(args.log, exp_name)
-        writer = SummaryWriter(log_dir)
 
         prev_best_val_loss = float('inf')
         prev_best_model_path = None

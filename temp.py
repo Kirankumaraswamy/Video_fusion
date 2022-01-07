@@ -28,5 +28,5 @@ plt.imshow(c)
 plt.show()
 
 
---dist-url tcp://localhost:10055 --multiprocessing-distributed --world-size 100 --rank 0 --fix-pred-lr --resume /home/kiran/kiran/Thesis/code/kiran_code/checkpoint_0006.pth.tar --start-epoch 7
+--dist-url tcp://localhost:10055 --multiprocessing-distributed --world-size 1 --rank 0 --fix-pred-lr --resume /home/kiran/kiran/Thesis/code/kiran_code/checkpoint_0006.pth.tar --start-epoch 7
 '''

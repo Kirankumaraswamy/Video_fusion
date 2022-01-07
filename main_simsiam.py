@@ -61,7 +61,7 @@ model_names = sorted(name for name in models.__dict__
     and callable(models.__dict__[name]))
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-parser.add_argument('--data', metavar='DIR', default='/home/kiran/kiran/Thesis/code/kiran_code/datasets/UCF50_small1',
+parser.add_argument('--data', metavar='DIR', default='datasets/UCF50',
                     help='path to dataset')
 parser.add_argument('-a', '--arch', metavar='ARCH', default='r21d',
                     choices=model_names,
@@ -122,6 +122,8 @@ parser.add_argument('--number_of_clips', type=int, default=3, help='tuple length
 
 def main():
     args = parser.parse_args()
+
+    args.data = os.path.join(os.path.dirname(__file__), args.data)
 
     if args.seed is not None:
         random.seed(args.seed)
