@@ -42,7 +42,7 @@ logging.basicConfig(filename=os.path.join(LOG_DIR, EXPERIMENT_NAME+"_"+ time_sta
 
 def order_class_index(order):
     """Return the index of the order in its full permutation.
-    
+
     Args:
         order (tensor): e.g. [0,1,2]
     """
@@ -58,7 +58,7 @@ def train(args, model, criterion, optimizer, device, train_dataloader, writer, e
     correct = 0
     for i, data in enumerate(train_dataloader, 1):
         # get inputs
-        #print("Batch: ", i, " of ", len(train_dataloader))
+        print("Batch: ", i, " of ", len(train_dataloader))
         tuple_clips, tuple_orders = data
         inputs = tuple_clips.to(device)
         targets = [order_class_index(order) for order in tuple_orders]
@@ -73,6 +73,7 @@ def train(args, model, criterion, optimizer, device, train_dataloader, writer, e
         # compute loss and acc
         running_loss += loss.item()
         pts = torch.argmax(outputs, dim=1)
+        print(pts)  
         correct += torch.sum(targets == pts).item()
         # print statistics and write summary every N batch
         '''if i % args.pf == 0:
@@ -96,7 +97,7 @@ def train(args, model, criterion, optimizer, device, train_dataloader, writer, e
 def validate(args, model, criterion, device, val_dataloader, writer, epoch):
     torch.set_grad_enabled(False)
     model.eval()
-    
+
     total_loss = 0.0
     correct = 0
     for i, data in enumerate(val_dataloader):
@@ -111,8 +112,10 @@ def validate(args, model, criterion, device, val_dataloader, writer, epoch):
         # compute loss and acc
         total_loss += loss.item()
         pts = torch.argmax(outputs, dim=1)
+
         correct += torch.sum(targets == pts).item()
         # print('correct: {}, {}, {}'.format(correct, targets, pts))
+
     avg_loss = total_loss / len(val_dataloader)
     avg_acc = correct / len(val_dataloader.dataset)
     writer.add_scalar('val/CrossEntropyLoss', avg_loss, epoch)
@@ -140,6 +143,7 @@ def test(args, model, criterion, device, test_dataloader):
         # compute loss and acc
         total_loss += loss.item()
         pts = torch.argmax(outputs, dim=1)
+
         correct += torch.sum(targets == pts).item()
         # print('correct: {}, {}, {}'.format(correct, targets, pts))
     avg_loss = total_loss / len(test_dataloader)
@@ -151,11 +155,11 @@ def test(args, model, criterion, device, test_dataloader):
 def parse_args():
 
     parser = argparse.ArgumentParser(description='Video Clip Order Prediction')
-    parser.add_argument('--data', type=str, default='datasets/UCF50', metavar='DIR', help='path to dataset')
+    parser.add_argument('--data', type=str, default='datasets/UCF50_small1', metavar='DIR', help='path to dataset')
     parser.add_argument('--mode', type=str, default='train', help='train/test')
     parser.add_argument('--model', type=str, default='r21d', help='c3d/r3d/r21d/c3d_small')
-    parser.add_argument('--cl', type=int, default=8, help='clip length')
-    parser.add_argument('--it', type=int, default=4, help='interval')
+    parser.add_argument('--cl', type=int, default=6, help='clip length')
+    parser.add_argument('--it', type=int, default=2, help='interval')
     parser.add_argument('--tl', type=int, default=3, help='tuple length')
     parser.add_argument('--gpu', type=int, default=0, help='GPU id')
     parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
@@ -186,7 +190,7 @@ if __name__ == '__main__':
     args.data = os.path.join(os.path.dirname(__file__), args.data)
 
     torch.backends.cudnn.benchmark = True
-    # Force the pytorch to create context on the specific device 
+    # Force the pytorch to create context on the specific device
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     device = torch.device('cuda:0' if torch.cuda.is_available() else "cpu")
 
@@ -202,7 +206,7 @@ if __name__ == '__main__':
         base = C3D(with_classifier=False)
     elif args.model == 'r3d':
         base = R3DNet(layer_sizes=(1,1,1,1), with_classifier=False)
-    elif args.model == 'r21d':   
+    elif args.model == 'r21d':
         base = R2Plus1DNet(layer_sizes=(1,1,1,1), with_classifier=False)
     elif args.model == 'c3d_small':
         base = C3DSMALL(with_classifier=False, num_classes=50)
@@ -221,7 +225,7 @@ if __name__ == '__main__':
         ])
 
 
-        train_dataset = UCF50VCOP(traindir, args.cl, args.it, args.tl, True, train_transforms)
+        train_dataset = UCF50VCOP(traindir, args.cl, args.it, args.tl, True, train_transforms, extensions=("mp4"))
         # train_dataset = UCF101VCOPDataset('data/ucf101', args.cl, args.it, args.tl, True, train_transforms)
         # split val for 800 videos
         train_dataset, val_dataset = random_split(train_dataset, (len(train_dataset)-8, 8))
@@ -309,5 +313,3 @@ if __name__ == '__main__':
         print('TEST video number: {}.'.format(len(test_dataset)))
         criterion = nn.CrossEntropyLoss()
         test(args, vcopn, criterion, device, test_dataloader)
-
-

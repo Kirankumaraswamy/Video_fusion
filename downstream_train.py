@@ -35,7 +35,7 @@ import simsiam.loader
 import simsiam.builder
 
 from datasets.ucf101 import UCF101VCOPDataset, UCF101ClipRetrievalDataset
-from datasets.ucf50 import UCF50ClipRetreival, UCF50SimSiam
+from datasets.ucf50 import UCF50ClipRetreival, UCF11
 from torch.utils.data import DataLoader, random_split
 from models.c3d import C3D
 from models.r3d import R3DNet
@@ -46,7 +46,7 @@ import logging
 from tensorboardX import SummaryWriter
 
 EXPERIMENTS_DIR="logs"
-EXPERIMENT_NAME="SimSiam"
+EXPERIMENT_NAME="UCF11"
 TENSORBOARD_DIR = os.path.join(os.path.dirname(__file__), EXPERIMENTS_DIR, "runs", EXPERIMENT_NAME)
 LOG_DIR = os.path.join(os.path.dirname(__file__), EXPERIMENTS_DIR, EXPERIMENT_NAME)
 writer = SummaryWriter(log_dir=TENSORBOARD_DIR)
@@ -61,20 +61,20 @@ model_names = sorted(name for name in models.__dict__
     and callable(models.__dict__[name]))
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-parser.add_argument('--data', metavar='DIR', default='datasets/UCF50_small1',
+parser.add_argument('--data', metavar='DIR', default='datasets/UCF11',
                     help='path to dataset')
 parser.add_argument('-a', '--arch', metavar='ARCH', default='r21d',
                     choices=model_names,
                     help='model architecture: ' +
                         ' | '.join(model_names) +
                         ' (default: resnet50)')
-parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
+parser.add_argument('-j', '--workers', default=1, type=int, metavar='N',
                     help='number of data loading workers (default: 32)')
-parser.add_argument('--epochs', default=100, type=int, metavar='N',
+parser.add_argument('--epochs', default=101, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=1, type=int,
+parser.add_argument('-b', '--batch-size', default=2, type=int,
                     metavar='N',
                     help='mini-batch size (default: 512), this is the total '
                          'batch size of all GPUs on the current node when '
@@ -83,7 +83,7 @@ parser.add_argument('--lr', '--learning-rate', default=0.05, type=float,
                     metavar='LR', help='initial (base) learning rate', dest='lr')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum of SGD solver')
-parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
+parser.add_argument('--wd', '--weight-decay', default=5e-4, type=float,
                     metavar='W', help='weight decay (default: 1e-4)',
                     dest='weight_decay')
 parser.add_argument('-p', '--print-freq', default=10, type=int,
@@ -118,7 +118,7 @@ parser.add_argument('--fix-pred-lr', action='store_true',
 
 parser.add_argument('--clip_length', type=int, default=8, help='clip length')
 parser.add_argument('--clip_interval', type=int, default=4, help='interval')
-parser.add_argument('--number_of_clips', type=int, default=3, help='tuple length')
+parser.add_argument('--number_of_clips', type=int, default=1, help='tuple length')
 
 def main():
     args = parser.parse_args()
@@ -189,13 +189,11 @@ def main_worker(gpu, ngpus_per_node, args):
     elif args.arch == 'r3d':
         base = R3DNet(layer_sizes=(1, 1, 1, 1), with_classifier=False)
     elif args.arch == 'r21d':
-        base = R2Plus1DNet(layer_sizes=(1, 1, 1, 1), with_classifier=False, num_classes=50, zero_init_residual=True)
+        base = R2Plus1DNet(layer_sizes=(1, 1, 1, 1), with_classifier=True, num_classes=11, zero_init_residual=True)
     elif args.arch == 'c3d_small':
         base = C3DSMALL(with_classifier=False, num_classes=50)
 
-    model = simsiam.builder.SimSiam(
-        base,
-        args.dim, args.pred_dim)
+    model = base
 
     # infer learning rate before changing batch size
     init_lr = args.lr * args.batch_size / 256
@@ -232,17 +230,14 @@ def main_worker(gpu, ngpus_per_node, args):
     print(model) # print model after SyncBatchNorm
 
     # define loss function (criterion) and optimizer
-    criterion = nn.CosineSimilarity(dim=1).cuda(args.gpu)
+    criterion = nn.CrossEntropyLoss()
 
-    if args.fix_pred_lr:
-        optim_params = [{'params': model.module.encoder.parameters(), 'fix_lr': False},
-                        {'params': model.module.predictor.parameters(), 'fix_lr': True}]
-    else:
-        optim_params = model.parameters()
+    optim_params = model.parameters()
 
     optimizer = torch.optim.SGD(optim_params, init_lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', min_lr=1e-5, patience=50, factor=0.1)
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -273,22 +268,49 @@ def main_worker(gpu, ngpus_per_node, args):
         transforms.ToTensor()
     ])
 
-    train_dataset = UCF50SimSiam(traindir, args.clip_length, args.clip_interval, args.number_of_clips, True, augmentation, extensions=("mp4"))
+    train_dataset = UCF11(traindir, args.clip_length, args.clip_interval, args.number_of_clips, True, augmentation, extensions=("mpg"))
 
     # train_dataset = UCF101VCOPDataset('data/ucf101', args.cl, args.it, args.tl, True, train_transforms)
 
     print('TRAIN video number: {}'.format(len(train_dataset)))
 
+    l = len(train_dataset)
+    train_length = int(l * 0.7)
+    val_length = int(l * 0.2)
+    test_length = l - train_length - val_length
+    train_dataset, val_test_dataset = random_split(train_dataset,  (train_length, val_length + test_length))
+    val_dataset, test_dataset = random_split(val_test_dataset,  (val_length, test_length))
+
+    print('TRAIN video number: {}, VAL video number: {}, Test video number: {}.'.format(len(train_dataset), len(val_dataset), len(test_dataset)))
+    logging.info('TRAIN video number: {}, VAL video number: {}.'.format(len(train_dataset), len(val_dataset)))
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
     else:
         train_sampler = None
 
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
+                                  num_workers=args.workers, pin_memory=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
+                                num_workers=args.workers, pin_memory=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,
+                               num_workers=args.workers, pin_memory=True)
+    '''
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True)
 
+    val_dataloader = torch.utils.data.DataLoader(
+        val_dataset, batch_size=args.batch_size, shuffle=False,
+        num_workers=args.workers, pin_memory=True)
+    test_dataloader = torch.utils.data.DataLoader(
+        test_dataset, batch_size=args.batch_size, shuffle=False,
+        num_workers=args.workers, pin_memory=True)'''
+
+    training_losses = []
+    training_accs = []
+    val_losses = []
+    val_accs = []
 
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
@@ -297,9 +319,10 @@ def main_worker(gpu, ngpus_per_node, args):
         time_start = time.time()
 
         # train for one epoch
-        train_loss = train(train_loader, model, criterion, optimizer, epoch, args)
-        print('Epoch: {} -> Epoch time: {:.2f} s. Training loss: {}'.format(epoch, time.time() - time_start, train_loss))
-        logging.info('Epoch: {} -> Epoch time: {:.2f} s. Training loss: {}'.format(epoch, time.time() - time_start, train_loss))
+        train_loss, train_acc = train(train_loader, model, criterion, optimizer, epoch, args)
+        val_loss, val_acc = validation(val_dataloader, model, criterion, optimizer, epoch, args)
+        print('Epoch: {} -> Epoch time: {:.2f} s. Training loss: {} , Training acc: {} => Validation loss: {}, Validation acc: {}'.format(epoch, time.time() - time_start, train_loss, train_acc, val_loss, val_acc))
+        logging.info('Epoch: {} -> Epoch time: {:.2f} s. Training loss: {} , Training acc: {} => Validation loss: {}, Validation acc: {}'.format(epoch, time.time() - time_start, train_loss, train_acc, val_loss, val_acc))
 
         if epoch % 20 == 0 and (not args.multiprocessing_distributed or (args.multiprocessing_distributed
                 and args.rank % ngpus_per_node == 0)):
@@ -308,7 +331,20 @@ def main_worker(gpu, ngpus_per_node, args):
                 'arch': args.arch,
                 'state_dict': model.state_dict(),
                 'optimizer' : optimizer.state_dict(),
-            }, is_best=False, filename='simsiam_checkpoint_{:04d}.pth.tar'.format(epoch))
+            }, is_best=False, filename='downstream_checkpoint_{:04d}.pth.tar'.format(epoch))
+
+        training_losses.append(train_loss)
+        training_accs.append(train_acc)
+        val_losses.append(val_loss)
+        val_accs.append(val_acc)
+
+    test_loss, test_acc = test(test_dataloader, model, criterion, optimizer, epoch, args)
+    print('Test loss: {} , Test acc: {}'.format( test_loss, test_acc))
+
+    print(training_losses)
+    print(training_accs)
+    print(val_losses)
+    print(val_accs)
 
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
@@ -323,36 +359,122 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     # switch to train mode
     model.train()
     total_loss = 0.0
+    correct = 0
 
     end = time.time()
-    for i, (images, _) in enumerate(train_loader):
+    for i, (images, targets) in enumerate(train_loader):
         #print("Batch: ", i, " of ", len(train_loader))
         # measure data loading time
         data_time.update(time.time() - end)
         if args.gpu is not None:
-            images[0] = images[0].cuda(args.gpu, non_blocking=True)
-            images[1] = images[1].cuda(args.gpu, non_blocking=True)
-            images[2] = images[2].cuda(args.gpu, non_blocking=True)
+            images = images.cuda(args.gpu, non_blocking=True)
+            targets = targets.cuda(args.gpu, non_blocking=True)
 
+        optimizer.zero_grad()
         # compute output and loss
-        p1, p2, p3, z1, z2, z3 = model(x1=images[0], x2=images[1], x3=images[2])
-        loss = -(criterion(p1, z2).mean() + criterion(p2, z3).mean() + criterion(p3, z1).mean() )/3
+        outputs= model(images)
+
+        loss = criterion(outputs, targets)
+        loss.backward()
+        optimizer.step()
 
         losses.update(loss.item(), images[0].size(0))
 
         total_loss += loss.item()
-
-        # compute gradient and do SGD step
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        pts = torch.argmax(outputs, dim=1)
+        correct += torch.sum(targets == pts).item()
 
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
 
     avg_loss = total_loss / len(train_loader)
-    return avg_loss
+    avg_acc = correct / len(train_loader.dataset)
+    return avg_loss, avg_acc
+
+def validation(validation_loader, model, criterion, optimizer, epoch, args):
+    batch_time = AverageMeter('Time', ':6.3f')
+    data_time = AverageMeter('Data', ':6.3f')
+    losses = AverageMeter('Loss', ':.4f')
+    progress = ProgressMeter(
+        len(validation_loader),
+        [batch_time, data_time, losses],
+        prefix="Epoch: [{}]".format(epoch))
+
+    # switch to train mode
+    model.eval()
+    total_loss = 0.0
+    correct = 0
+
+    end = time.time()
+    for i, (images, targets) in enumerate(validation_loader):
+        #print("Batch: ", i, " of ", len(train_loader))
+        # measure data loading time
+        data_time.update(time.time() - end)
+        if args.gpu is not None:
+            images = images.cuda(args.gpu, non_blocking=True)
+            targets = targets.cuda(args.gpu, non_blocking=True)
+
+        # compute output and loss
+        outputs = model(images)
+
+        loss = criterion(outputs, targets)
+
+        losses.update(loss.item(), images[0].size(0))
+
+        total_loss += loss.item()
+        pts = torch.argmax(outputs, dim=1)
+        correct += torch.sum(targets == pts).item()
+
+        # measure elapsed time
+        batch_time.update(time.time() - end)
+        end = time.time()
+
+    avg_loss = total_loss / len(validation_loader)
+    avg_acc = correct / len(validation_loader.dataset)
+    return avg_loss, avg_acc
+
+def test(test_loader, model, criterion, optimizer, epoch, args):
+    batch_time = AverageMeter('Time', ':6.3f')
+    data_time = AverageMeter('Data', ':6.3f')
+    losses = AverageMeter('Loss', ':.4f')
+    progress = ProgressMeter(
+        len(test_loader),
+        [batch_time, data_time, losses],
+        prefix="Epoch: [{}]".format(epoch))
+
+    # switch to train mode
+    model.eval()
+    total_loss = 0.0
+    correct = 0
+
+    end = time.time()
+    for i, (images, targets) in enumerate(test_loader):
+        #print("Batch: ", i, " of ", len(train_loader))
+        # measure data loading time
+        data_time.update(time.time() - end)
+        if args.gpu is not None:
+            images = images.cuda(args.gpu, non_blocking=True)
+            targets = targets.cuda(args.gpu, non_blocking=True)
+
+        # compute output and loss
+        outputs = model(images)
+
+        loss = criterion(outputs, targets)
+
+        losses.update(loss.item(), images[0].size(0))
+
+        total_loss += loss.item()
+        pts = torch.argmax(outputs, dim=1)
+        correct += torch.sum(targets == pts).item()
+
+        # measure elapsed time
+        batch_time.update(time.time() - end)
+        end = time.time()
+
+    avg_loss = total_loss / len(test_loader)
+    avg_acc = correct / len(test_loader.dataset)
+    return avg_loss, avg_acc
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
