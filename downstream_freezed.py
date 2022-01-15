@@ -35,16 +35,15 @@ import simsiam.loader
 import simsiam.builder
 
 from datasets.ucf101 import UCF101VCOPDataset, UCF101ClipRetrievalDataset
-from datasets.ucf50 import UCF50ClipRetreival, UCF11, UCF11Motion
+from datasets.ucf50 import UCF50ClipRetreival, UCF11, UCF11_pretrained
 from torch.utils.data import DataLoader, random_split
 from models.c3d import C3D
 from models.r3d import R3DNet
-from models.r21d import R2Plus1DNet
+from models.r21d import R2Plus1DNet, Classifier
 from models.c3d_small import C3DSMALL
 
 import logging
 from tensorboardX import SummaryWriter
-from tqdm import tqdm
 
 EXPERIMENTS_DIR="logs"
 EXPERIMENT_NAME="UCF11"
@@ -119,8 +118,8 @@ parser.add_argument('--pred-dim', default=512, type=int,
 parser.add_argument('--fix-pred-lr', action='store_true',
                     help='Fix learning rate for the predictor')
 
-parser.add_argument('--clip_length', type=int, default=16, help='clip length')
-parser.add_argument('--clip_interval', type=int, default=1, help='interval')
+parser.add_argument('--clip_length', type=int, default=8, help='clip length')
+parser.add_argument('--clip_interval', type=int, default=4, help='interval')
 parser.add_argument('--number_of_clips', type=int, default=1, help='tuple length')
 
 def main():
@@ -192,7 +191,7 @@ def main_worker(gpu, ngpus_per_node, args):
     elif args.arch == 'r3d':
         base = R3DNet(layer_sizes=(1, 1, 1, 1), with_classifier=False)
     elif args.arch == 'r21d':
-        base = R2Plus1DNet(layer_sizes=(1, 1, 1, 1), with_classifier=True, num_classes=11, zero_init_residual=True)
+        base = R2Plus1DNet(layer_sizes=(1, 1, 1, 1), with_classifier=False, num_classes=11, zero_init_residual=True)
     elif args.arch == 'c3d_small':
         base = C3DSMALL(with_classifier=False, num_classes=50)
 
@@ -232,33 +231,6 @@ def main_worker(gpu, ngpus_per_node, args):
         raise NotImplementedError("Only DistributedDataParallel is supported.")
     print(model) # print model after SyncBatchNorm
 
-    # define loss function (criterion) and optimizer
-    criterion = nn.CrossEntropyLoss()
-
-    optim_params = model.parameters()
-
-    optimizer = torch.optim.SGD(optim_params, init_lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', min_lr=1e-5, patience=50, factor=0.1)
-
-    # optionally resume from a checkpoint
-    if args.resume:
-        if os.path.isfile(args.resume):
-            print("=> loading checkpoint '{}'".format(args.resume))
-            if args.gpu is None:
-                checkpoint = torch.load(args.resume)
-            else:
-                # Map model to be loaded to specified single gpu.
-                loc = 'cuda:{}'.format(args.gpu)
-                checkpoint = torch.load(args.resume, map_location=loc)
-            args.start_epoch = checkpoint['epoch']
-            model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.resume, checkpoint['epoch']))
-        else:
-            print("=> no checkpoint found at '{}'".format(args.resume))
 
     # use pretrained weights
     if args.pretrain:
@@ -305,11 +277,15 @@ def main_worker(gpu, ngpus_per_node, args):
         transforms.ToTensor()
     ])
 
-    train_dataset = UCF11Motion(traindir, args.clip_length, args.clip_interval, args.number_of_clips, True, augmentation, extensions=("mpg"))
+    train_dataset = UCF11_pretrained(traindir, args.clip_length, args.clip_interval, args.number_of_clips, True, augmentation, extensions=("mpg"), model=model, args=args)
 
     # train_dataset = UCF101VCOPDataset('data/ucf101', args.cl, args.it, args.tl, True, train_transforms)
 
     print('TRAIN video number: {}'.format(len(train_dataset)))
+
+    all_data_loader = DataLoader(train_dataset, batch_size=args.batch_size,
+                              num_workers=args.workers, pin_memory=True)
+
 
     l = len(train_dataset)
     train_length = int(l * 0.7)
@@ -348,6 +324,20 @@ def main_worker(gpu, ngpus_per_node, args):
     training_accs = []
     val_losses = []
     val_accs = []
+
+    model = Classifier(num_classes=11)
+    if args.gpu is not None:
+        model.cuda(args.gpu)
+
+    # define loss function (criterion) and optimizer
+    criterion = nn.CrossEntropyLoss()
+
+    optim_params = model.parameters()
+
+    optimizer = torch.optim.SGD(optim_params, init_lr,
+                                momentum=args.momentum,
+                                weight_decay=args.weight_decay)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', min_lr=1e-5, patience=50, factor=0.1)
 
 
     for epoch in range(args.start_epoch, args.epochs):
@@ -401,23 +391,23 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     correct = 0
 
     end = time.time()
-    for i, (images, targets) in enumerate(tqdm(train_loader)):
+    for i, (features, targets) in enumerate(train_loader):
         #print("Batch: ", i, " of ", len(train_loader))
         # measure data loading time
         data_time.update(time.time() - end)
         if args.gpu is not None:
-            images = images.cuda(args.gpu, non_blocking=True)
+            features = features.cuda(args.gpu, non_blocking=True)
             targets = targets.cuda(args.gpu, non_blocking=True)
 
         optimizer.zero_grad()
         # compute output and loss
-        outputs= model(images)
+        outputs= model(features)
 
         loss = criterion(outputs, targets)
         loss.backward()
         optimizer.step()
 
-        losses.update(loss.item(), images[0].size(0))
+        losses.update(loss.item(), features.size(0))
 
         total_loss += loss.item()
         pts = torch.argmax(outputs, dim=1)
@@ -447,20 +437,20 @@ def validation(validation_loader, model, criterion, optimizer, epoch, args):
     correct = 0
 
     end = time.time()
-    for i, (images, targets) in enumerate(validation_loader):
+    for i, (features, targets) in enumerate(validation_loader):
         #print("Batch: ", i, " of ", len(train_loader))
         # measure data loading time
         data_time.update(time.time() - end)
         if args.gpu is not None:
-            images = images.cuda(args.gpu, non_blocking=True)
+            features = features.cuda(args.gpu, non_blocking=True)
             targets = targets.cuda(args.gpu, non_blocking=True)
 
         # compute output and loss
-        outputs = model(images)
+        outputs = model(features)
 
         loss = criterion(outputs, targets)
 
-        losses.update(loss.item(), images[0].size(0))
+        losses.update(loss.item(), features.size(0))
 
         total_loss += loss.item()
         pts = torch.argmax(outputs, dim=1)
@@ -490,16 +480,16 @@ def test(test_loader, model, criterion, optimizer, epoch, args):
     correct = 0
 
     end = time.time()
-    for i, (images, targets) in enumerate(test_loader):
+    for i, (features, targets) in enumerate(test_loader):
         #print("Batch: ", i, " of ", len(train_loader))
         # measure data loading time
         data_time.update(time.time() - end)
         if args.gpu is not None:
-            images = images.cuda(args.gpu, non_blocking=True)
+            images = features.cuda(args.gpu, non_blocking=True)
             targets = targets.cuda(args.gpu, non_blocking=True)
 
         # compute output and loss
-        outputs = model(images)
+        outputs = model(features)
 
         loss = criterion(outputs, targets)
 

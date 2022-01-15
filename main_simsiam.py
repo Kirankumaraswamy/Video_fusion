@@ -44,6 +44,7 @@ from models.c3d_small import C3DSMALL
 
 import logging
 from tensorboardX import SummaryWriter
+from tqdm import tqdm
 
 EXPERIMENTS_DIR="logs"
 EXPERIMENT_NAME="SimSiam"
@@ -61,7 +62,7 @@ model_names = sorted(name for name in models.__dict__
     and callable(models.__dict__[name]))
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-parser.add_argument('--data', metavar='DIR', default='datasets/UCF50_small1',
+parser.add_argument('--data', metavar='DIR', default='datasets/UCF50',
                     help='path to dataset')
 parser.add_argument('-a', '--arch', metavar='ARCH', default='r21d',
                     choices=model_names,
@@ -74,7 +75,7 @@ parser.add_argument('--epochs', default=100, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=1, type=int,
+parser.add_argument('-b', '--batch-size', default=16, type=int,
                     metavar='N',
                     help='mini-batch size (default: 512), this is the total '
                          'batch size of all GPUs on the current node when '
@@ -117,7 +118,7 @@ parser.add_argument('--fix-pred-lr', action='store_true',
                     help='Fix learning rate for the predictor')
 
 parser.add_argument('--clip_length', type=int, default=8, help='clip length')
-parser.add_argument('--clip_interval', type=int, default=4, help='interval')
+parser.add_argument('--clip_interval', type=int, default=2, help='interval')
 parser.add_argument('--number_of_clips', type=int, default=3, help='tuple length')
 
 def main():
@@ -273,7 +274,7 @@ def main_worker(gpu, ngpus_per_node, args):
         transforms.ToTensor()
     ])
 
-    train_dataset = UCF50SimSiam(traindir, args.clip_length, args.clip_interval, args.number_of_clips, True, augmentation, extensions=("mp4"))
+    train_dataset = UCF50SimSiam(traindir, args.clip_length, args.clip_interval, args.number_of_clips, True, augmentation, extensions=("avi"))
 
     # train_dataset = UCF101VCOPDataset('data/ucf101', args.cl, args.it, args.tl, True, train_transforms)
 
@@ -325,7 +326,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     total_loss = 0.0
 
     end = time.time()
-    for i, (images, _) in enumerate(train_loader):
+    for i, (images, _) in enumerate(tqdm(train_loader)):
         #print("Batch: ", i, " of ", len(train_loader))
         # measure data loading time
         data_time.update(time.time() - end)

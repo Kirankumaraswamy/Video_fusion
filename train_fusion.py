@@ -13,6 +13,7 @@ import random
 import shutil
 import time
 import warnings
+from datetime import datetime
 
 import matplotlib.pyplot as plt
 import torch
@@ -29,7 +30,6 @@ import torchvision.datasets as datasets
 import torchvision.models as models
 import matplotlib.pyplot as plt
 import numpy as np
-from tensorboardX import SummaryWriter
 
 import simsiam.loader
 import simsiam.builder
@@ -42,26 +42,28 @@ from models.r3d import R3DNet
 from models.r21d import R2Plus1DNet
 from models.c3d_small import C3DSMALL
 
-from models.c3d_small import C3DSMALL
-
 import logging
+from tensorboardX import SummaryWriter
+from tqdm import tqdm
+import itertools
 
 EXPERIMENTS_DIR="logs"
-EXPERIMENT_NAME="VCOP"
+EXPERIMENT_NAME="Fusion"
 TENSORBOARD_DIR = os.path.join(os.path.dirname(__file__), EXPERIMENTS_DIR, "runs", EXPERIMENT_NAME)
-LOG_FILE = os.path.join(os.path.dirname(__file__), EXPERIMENTS_DIR, EXPERIMENT_NAME, EXPERIMENT_NAME)
+LOG_DIR = os.path.join(os.path.dirname(__file__), EXPERIMENTS_DIR, EXPERIMENT_NAME)
 writer = SummaryWriter(log_dir=TENSORBOARD_DIR)
-logging.basicConfig(filename=f'{LOG_FILE}.log', level=logging.DEBUG)
 
-
+os.makedirs(LOG_DIR, exist_ok=True)
+time_stamp = datetime.now().strftime("%Y%m%d%H%M%S.%f")
+logging.basicConfig(filename=os.path.join(LOG_DIR, EXPERIMENT_NAME+"_"+ time_stamp +".log"), level=logging.DEBUG)
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-parser.add_argument('--data', metavar='DIR', default='/home/kiran/kiran/Thesis/code/kiran_code/datasets/UCF50_small1',
+parser.add_argument('--data', metavar='DIR', default='datasets/UCF50',
                     help='path to dataset')
-parser.add_argument('-a', '--arch', metavar='ARCH', default='R2Plus1D',
+parser.add_argument('-a', '--arch', metavar='ARCH', default='r21d',
                     choices=model_names,
                     help='model architecture: ' +
                         ' | '.join(model_names) +
@@ -72,7 +74,7 @@ parser.add_argument('--epochs', default=100, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=2, type=int,
+parser.add_argument('-b', '--batch-size', default=16, type=int,
                     metavar='N',
                     help='mini-batch size (default: 512), this is the total '
                          'batch size of all GPUs on the current node when '
@@ -116,7 +118,7 @@ parser.add_argument('--fix-pred-lr', action='store_true',
 
 #  vcop specific configs
 parser.add_argument('--clip_length', type=int, default=8, help='clip length')
-parser.add_argument('--clip_interval', type=int, default=4, help='interval')
+parser.add_argument('--clip_interval', type=int, default=2, help='interval')
 parser.add_argument('--number_of_clips', type=int, default=3, help='tuple length')
 
 
@@ -181,8 +183,17 @@ def main_worker(gpu, ngpus_per_node, args):
         torch.distributed.barrier()
     # create model
     print("=> creating model '{}'".format(args.arch))
-    base = R2Plus1DNet
-    model = simsiam.builder.SimSiam(
+    ########### model ##############
+    if args.arch == 'c3d':
+        base = C3D(with_classifier=False)
+    elif args.arch == 'r3d':
+        base = R3DNet(layer_sizes=(1, 1, 1, 1), with_classifier=False)
+    elif args.arch == 'r21d':
+        base = R2Plus1DNet(layer_sizes=(1, 1, 1, 1), with_classifier=False, num_classes=50, zero_init_residual=True)
+    elif args.arch == 'c3d_small':
+        base = C3DSMALL(with_classifier=False, num_classes=50)
+
+    model = simsiam.builder.Fusion(
         base,
         args.dim, args.pred_dim)
 
@@ -233,6 +244,10 @@ def main_worker(gpu, ngpus_per_node, args):
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
 
+    # for VCOP
+    criterion_vcop = nn.CrossEntropyLoss()
+
+
     # optionally resume from a checkpoint
     if args.resume:
         if os.path.isfile(args.resume):
@@ -262,7 +277,7 @@ def main_worker(gpu, ngpus_per_node, args):
         transforms.ToTensor()
     ])
 
-    train_dataset = UCF50ClipRetreival(traindir, args.clip_length, args.clip_interval, args.number_of_clips, True, augmentation)
+    train_dataset = UCF50ClipRetreival(traindir, args.clip_length, args.clip_interval, args.number_of_clips, True, augmentation, extensions=("avi"))
 
     # train_dataset = UCF101VCOPDataset('data/ucf101', args.cl, args.it, args.tl, True, train_transforms)
 
@@ -278,7 +293,6 @@ def main_worker(gpu, ngpus_per_node, args):
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
         num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True)
 
-
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
@@ -286,20 +300,20 @@ def main_worker(gpu, ngpus_per_node, args):
         time_start = time.time()
 
         # train for one epoch
-        train_loss = train(train_loader, model, criterion, optimizer, epoch, args)
-        print('Epoch: {} -> Epoch time: {:.2f} s. Training loss: {}'.format(epoch, time.time() - time_start, train_loss))
+        train_loss, loss1, loss2, avg_acc = train(train_loader, model, criterion, criterion_vcop, optimizer, epoch, args)
+        print('Epoch: {} -> Epoch time: {:.2f} s. Training loss: {}, loss1: {}, loss2: {}, avg_acc: {}'.format(epoch, time.time() - time_start, train_loss, loss1, loss2, avg_acc))
 
-        if epoch % 2 == 0 and (not args.multiprocessing_distributed or (args.multiprocessing_distributed
-                and args.rank % ngpus_per_node == 0)):
+        if epoch % 20 == 0 and (not args.multiprocessing_distributed or (args.multiprocessing_distributed
+                                                                         and args.rank % ngpus_per_node == 0)):
             save_checkpoint({
                 'epoch': epoch + 1,
                 'arch': args.arch,
                 'state_dict': model.state_dict(),
-                'optimizer' : optimizer.state_dict(),
-            }, is_best=False, filename='checkpoint_{:04d}.pth.tar'.format(epoch))
+                'optimizer': optimizer.state_dict(),
+            }, is_best=False, filename='fusion_checkpoint_{:04d}.pth.tar'.format(epoch))
 
 
-def train(train_loader, model, criterion, optimizer, epoch, args):
+def train(train_loader, model, criterion, criterion_vcop, optimizer, epoch, args):
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
     losses = AverageMeter('Loss', ':.4f')
@@ -311,36 +325,60 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     # switch to train mode
     model.train()
     total_loss = 0.0
+    total_loss1 = 0.0
+    total_loss2 = 0.0
+
+    correct = 0
 
     end = time.time()
-    for i, (images, _) in enumerate(train_loader):
+    for i, (data, targets) in enumerate(train_loader):
         #print("Batch: ", i, " of ", len(train_loader))
         # measure data loading time
         data_time.update(time.time() - end)
+
+        targets = [order_class_index(order) for order in targets]
+        targets = torch.tensor(targets)
+        images = [0, 0, 0]
+        images[0] = data[:,0,:,:,:].cuda(args.gpu, non_blocking=True)
+        images[1] = data[:,1,:,:,:].cuda(args.gpu, non_blocking=True)
+        images[2] = data[:,2,:,:,:].cuda(args.gpu, non_blocking=True)
+
         if args.gpu is not None:
             images[0] = images[0].cuda(args.gpu, non_blocking=True)
             images[1] = images[1].cuda(args.gpu, non_blocking=True)
             images[2] = images[2].cuda(args.gpu, non_blocking=True)
+            targets = targets.cuda(args.gpu, non_blocking=True)
 
         # compute output and loss
-        p1, p2, p3, z1, z2, z3 = model(x1=images[0], x2=images[1], x3=images[2])
-        loss = -(criterion(p1, z2).mean() + criterion(p2, z3).mean() + criterion(p3, z1).mean() )/3
+        p1, p2, p3, z1, z2, z3, h = model(x1=images[0], x2=images[1], x3=images[2])
+        loss1 = -(criterion(p1, z2).mean() + criterion(p2, z3).mean() + criterion(p3, z1).mean() )/3
+        loss2 = criterion_vcop(h, targets)
+        loss = loss1 + loss2
 
         losses.update(loss.item(), images[0].size(0))
 
         total_loss += loss.item()
+        total_loss1 += loss1.item()
+        total_loss2 += loss2.item()
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
+        pts = torch.argmax(h, dim=1)
+        # print(pts)
+        correct += torch.sum(targets == pts).item()
+
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
 
     avg_loss = total_loss / len(train_loader)
-    return avg_loss
+    avg_loss1 = total_loss1 / len(train_loader)
+    avg_loss2 = total_loss2 / len(train_loader)
+    avg_acc = correct / len(train_loader.dataset)
+    return avg_loss, avg_loss1, avg_loss2, avg_acc
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
@@ -398,6 +436,14 @@ def adjust_learning_rate(optimizer, init_lr, epoch, args):
         else:
             param_group['lr'] = cur_lr
 
+def order_class_index(order):
+    """Return the index of the order in its full permutation.
+
+    Args:
+        order (tensor): e.g. [0,1,2]
+    """
+    classes = list(itertools.permutations(list(range(len(order)))))
+    return classes.index(tuple(order.tolist()))
 
 if __name__ == '__main__':
     main()

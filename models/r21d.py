@@ -207,7 +207,27 @@ class R2Plus1DNet(nn.Module):
         if self.with_classifier:
             x = self.linear(x)
 
-        return x 
+        return x
+
+
+class Classifier(nn.Module):
+    r"""Forms the overall ResNet feature extractor by initializng 5 layers, with the number of blocks in
+    each layer set by layer_sizes, and by performing a global average pool at the end producing a
+    512-dimensional vector for each element in the batch.
+        Args:
+            layer_sizes (tuple): An iterable containing the number of blocks in each layer
+            block_type (Module, optional): Type of block that is to be used to form the layers. Default: SpatioTemporalResBlock.
+    """
+
+    def __init__(self, num_classes=101):
+        super(Classifier, self).__init__()
+        self.num_classes = num_classes
+        self.linear = nn.Linear(512, self.num_classes)
+
+    def forward(self, x):
+        x = self.linear(x)
+
+        return x
 
 
 if __name__ == '__main__':

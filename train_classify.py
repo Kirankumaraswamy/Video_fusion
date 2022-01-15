@@ -146,7 +146,7 @@ def test(args, model, criterion, device, test_dataloader):
 def parse_args():
     parser = argparse.ArgumentParser(description='Video Classification')
     parser.add_argument('--mode', type=str, default='train', help='train/test')
-    parser.add_argument('--model', type=str, default='c3d', help='c3d/r3d/r21d')
+    parser.add_argument('--model', type=str, default='r21d', help='c3d/r3d/r21d')
     parser.add_argument('--dataset', type=str, default='ucf101', help='ucf101/hmdb51')
     parser.add_argument('--split', type=str, default='1', help='dataset split')
     parser.add_argument('--cl', type=int, default=16, help='clip length')
